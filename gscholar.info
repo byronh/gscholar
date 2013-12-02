@@ -1,0 +1,6 @@
+name = Google Scholar
+description = A block module that retrieves, stores, and displays lists of publications from Google Scholar by faculty member.
+core = 7.x
+files[] = gscholar.install
+files[] = gscholar.module
+configure = admin/config/content/gscholar

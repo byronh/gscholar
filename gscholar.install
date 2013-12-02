@@ -1,0 +1,27 @@
+<?php
+
+/**
+ * Implements hook_install().
+ */
+function gscholar_install() {
+    db_query("CREATE TABLE `publications` (
+        `pid` int(11) NOT NULL AUTO_INCREMENT,
+        `uid` int(11) NOT NULL,
+        `title` varchar(255) NOT NULL,
+        `authors` varchar(255) NOT NULL,
+        `journal` varchar(255) NOT NULL,
+        `citations` varchar(255) NOT NULL,
+        `year` varchar(255) NOT NULL,
+        `citelink` text NOT NULL,
+        `citedbylink` text NOT NULL,
+        PRIMARY KEY (`pid`)
+    ) ENGINE=MyISAM DEFAULT CHARSET=utf8");
+}
+
+
+/**
+ * Implements hook_uninstall().
+ */
+function gscholar_uninstall() {
+    db_query('DROP TABLE {publications}');
+}

@@ -1,0 +1,324 @@
+<?php
+
+/**
+ * @file
+ * A block module that retrieves, stores, and displays lists of publications from Google Scholar.
+ */
+
+ /**
+ * Implements hook_help.
+ *
+ * Displays help and module information.
+ *
+ * @param path
+ *   Which path of the site we're using to display help
+ * @param arg
+ *   Array that holds the current path as returned from arg() function
+ */
+function gscholar_help($path, $arg) {
+    switch ($path) {
+        case "admin/help#gscholar":
+            return '<p>' . t("Displays Google Scholar publications by faculty member") . '</p>';
+            break;
+    }
+}
+
+/**
+ * Implements hook_block_info().
+ */
+function gscholar_block_info() {
+    $blocks['gscholar'] = array(
+        // The name that will appear in the block list.
+        'info' => t('Google Scholar Publications'),
+        // Default setting.
+        'cache' => DRUPAL_CACHE_PER_ROLE,
+    );
+return $blocks;
+}
+
+
+/**
+ * Implements hook_menu().
+ */
+function gscholar_menu() {
+    $items = array();
+    $items['admin/config/content/gscholar'] = array(
+        'title' => 'Google Scholar',
+        'description' => 'Configuration for Google Scholar module',
+        'page callback' => 'drupal_get_form',
+        'page arguments' => array('gscholar_form'),
+        'access arguments' => array('access administration pages'),
+        'type' => MENU_NORMAL_ITEM,
+    );
+    $items['gscholar'] = array(
+        'title' => 'Google Scholar',
+        'page callback' => '_gscholar_page',
+        'access arguments' => array('access gscholar content'),
+        'type' => MENU_NORMAL_ITEM, //Will appear in Navigation menu.
+      );
+    return $items;
+}
+
+/**
+ * Page callback: Google Scholar settings
+ *
+ * @see gscholar_menu()
+ */
+function gscholar_form($form, &$form_state) {
+    $form['gscholar_max'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Maximum number of publications per page'),
+        '#default_value' => variable_get('gscholar_max', 10),
+        '#size' => 2,
+        '#maxlength' => 3,
+        '#description' => t('The maximum number of publications per page to display in the table.'),
+        '#required' => TRUE,
+    );
+    $form['gscholar_submit_two'] = array(
+        '#type' => 'submit',
+        '#value' => t('Update publication data for all faculty members'),
+        '#submit' => array('gscholar_form_submit_two'),
+    );
+    return system_settings_form($form);
+}
+
+/**
+ * Implements validation from the Form API.
+ *
+ * @param $form
+ *   A structured array containing the elements and properties of the form.
+ * @param $form_state
+ *   An array that stores information about the form's current state
+ *   during processing.
+ */
+function gscholar_form_validate($form, &$form_state){
+    $max_num = $form_state['values']['gscholar_max'];
+    if (!is_numeric($max_num)){
+        form_set_error('gscholar_max', t('You must enter a number for the maximum number of publications to display per page.'));
+    } else if ($max_num <= 0){
+        form_set_error('gscholar_max', t('Maximum number of publications per page to display must be positive.'));
+    }
+}
+
+/**
+ * Implements form submission from the Form API.
+ *
+ * @param $form
+ *   A structured array containing the elements and properties of the form.
+ * @param $form_state
+ *   An array that stores information about the form's current state
+ *   during processing.
+ */
+function gscholar_form_submit_two($form, &$form_state) {
+
+    $result = db_query('SELECT uid FROM {users} ORDER BY uid');
+
+    $result = db_select('users', 'u')
+        ->condition('u.uid', 0, '<>')
+        ->fields('u', array('uid'));
+    $result = $result->execute();
+
+    foreach ($result as $record) {
+        $field = field_get_items('user', user_load($record->uid), 'field_gscholar_profile');
+        $profile = $field[0]['safe_value'];
+
+        // Execute Python script to scrape Google Scholar
+        if (_gscholar_valid_profile($profile)) {
+            _gscholar_scrape($record->uid, $profile, 0);
+        }
+    }
+
+    drupal_set_message(t('The Google Scholar publication data for all faculty members has been updated.'));
+}
+
+/**
+ * Implements hook_permission().
+ */
+function gscholar_permission() {
+    return array(
+        'access gscholar content' => array(
+            'title' => t('Access content for the Google Scholar module'),
+        )
+    );
+}
+
+/**
+ *  Form for allowing users to scrape publication data from Google Scholar for their Drupal profile
+ * @param $form
+ *   A structured array containing the elements and properties of the form.
+ * @param $form_state
+ *   An array that stores information about the form's current state
+ *   during processing.
+ */
+function gscholar_scrape_form($form, &$form_state) {
+    global $user;
+    $form['gscholar_num_publications'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Maximum number of publications to fetch'),
+        '#size' => 2,
+        '#maxlength' => 4,
+        '#description' => t('(Leave blank to fetch all)'),
+        '#required' => FALSE,
+    );
+    $form['gscholar_submit'] = array(
+        '#type' => 'submit',
+        '#value' => 'Update my publication data',
+    );
+    return $form;
+}
+
+/**
+ * Implements validation from the Form API.
+ *
+ * @param $form
+ *   A structured array containing the elements and properties of the form.
+ * @param $form_state
+ *   An array that stores information about the form's current state
+ *   during processing.
+ */
+function gscholar_scrape_form_validate($form, &$form_state) {
+    // Validate Google Scholar profile codes are 12 characters long and use letters, numbers, underscore, or dash
+    $user = $GLOBALS['user'];
+    $field = field_get_items('user', user_load($user->uid), 'field_gscholar_profile');
+    $profile = $field[0]['safe_value'];
+    if (!_gscholar_valid_profile($profile)) {
+        form_set_error('gscholar_num_publications', t('The Google Scholar profile code in your user settings is invalid.'));
+    }
+    // Validate form input
+    $num = $form_state['values']['gscholar_num_publications'];
+    if (!empty($num) && (!is_numeric($num) || !((int)$num == $num && (int)$num > 0))) {
+        form_set_error('gscholar_num_publications', t('Must choose a positive integer.'));
+    }
+}
+
+/**
+ * Implements form submission from the Form API.
+ *
+ * @param $form
+ *   A structured array containing the elements and properties of the form.
+ * @param $form_state
+ *   An array that stores information about the form's current state
+ *   during processing.
+ */
+function gscholar_scrape_form_submit($form, &$form_state) {
+    $user = $GLOBALS['user'];
+    $field = field_get_items('user', user_load($user->uid), 'field_gscholar_profile');
+    $profile = $field[0]['safe_value'];
+
+    // Execute Python script to scrape Google Scholar
+    $num = $form_state['values']['gscholar_num_publications'];
+    _gscholar_scrape($user->uid, $profile, $num);
+
+    // Redirect and show success message
+    $form_state['redirect'] = 'user';
+    drupal_set_message(t('The Google Scholar publication data for this faculty member has been updated.'));
+}
+
+/**
+ * Returns true if the given profile ID is a valid Google Scholar profile ID
+ */
+function _gscholar_valid_profile($profile) {
+    return (preg_match("/^[A-Za-z0-9\-_]*$/", $profile) && strlen($profile) == 12);
+}
+
+/**
+ * Execute Python script to scrape Google Scholar
+ */
+function _gscholar_scrape($uid, $profile, $num) {
+    $command =  "/usr/bin/python2.6 ".drupal_get_path("module", "gscholar")."/scrape.py ".$uid." ".$profile." ".$num." 2>&1";
+    $return_status_code = exec($command);
+    return $return_status_code;
+}
+
+/**
+ * Custom page callback function, declared in gscholar_menu().
+ */
+function _gscholar_page() {
+    $output =  array(
+        'info' => array(
+            '#type' => 'markup',
+            '#markup' =>
+                '<p>Execute this action to scrape publication data from Google Scholar.</p>'.
+                '<p>NOTE: Your user profile must be updated with the correct Google Scholar profile code.</p>',
+        ),
+        drupal_get_form('gscholar_scrape_form')
+    );
+    return drupal_render($output);
+}
+
+/**
+ * Custom content function.
+ *
+ * Retrieve Google Scholar publications data from database for a particular user
+ *
+ * @return
+ *   A result set of the targeted posts.
+ */
+function gscholar_contents($user, $header, $display) {
+
+    $max_num = variable_get('gscholar_max', 10);
+
+    $result = db_select('publications', 'p')
+        ->condition('p.uid', $user->uid, '=')
+        ->fields('p', array('pid', 'title', 'authors', 'journal', 'citations', 'year', 'citelink', 'citedbylink'));
+    $result = $result->extend('PagerDefault')
+        ->limit($max_num);
+    $result = $result->extend('TableSort')
+        ->orderByHeader($header);
+
+    return $result->execute();
+}
+
+/**
+ * Implements hook_block_view().
+ *
+ * Prepares the contents of the block. Create a sortable version of the publications table.
+ */
+function gscholar_block_view($delta = '') {
+
+    switch ($delta) {
+        case 'gscholar':
+
+            if (arg(0) == 'user' && is_numeric(arg(1))) {
+                $uid = arg(1);
+                if ($uid) {
+
+                    $user = user_load($uid);
+                    $field = field_get_items('user', $user, 'field_gscholar_profile');
+
+                    $header = array(
+                        array('data' => t('Year'), 'field' => 'year', 'sort' => 'DESC'),
+                        array('data' => t('Title'), 'field' => 'title'),
+                        array('data' => t('Authors'), 'field' => 'authors'),
+                        array('data' => t('Conference'), 'field' => 'journal'),
+                        array('data' => t('# Citations'), 'field' => 'citations'),
+                    );
+
+                    $result = gscholar_contents($user, $header, 'block');
+
+                    $items = array();
+                    foreach ($result as $record) {
+                        $items[] = array(
+                            'year' => $record->year,
+                            'title' => empty($record->citelink) ? $record->title : l($record->title, "http://scholar.google.ca".$record->citelink),
+                            'authors' => $record->authors,
+                            'journal' => $record->journal,
+                            'citations' => empty($record->citedbylink) ? $record->citations : l($record->citations, $record->citedbylink)
+                        );
+                    }
+
+                    // No publications found for this faculty member
+                    if (empty($items)) {
+                        $block['content'] = t('No publications available for user "'.$user->name.'".');
+                    }
+                    // Display sortable and paginated table of publications
+                    else {
+                        $block['content'] = theme('pager');
+                        $block['content'] .= theme('table', array('header' => $header, 'rows' => $items));
+                        $block['content'] .= theme('pager');
+                    }
+                    return $block;
+                }
+            }
+    }
+}
