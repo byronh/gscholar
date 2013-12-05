@@ -10,12 +10,12 @@ function gscholar_install() {
         `title` varchar(255) NOT NULL,
         `authors` varchar(255) NOT NULL,
         `journal` varchar(255) NOT NULL,
-        `citations` varchar(255) NOT NULL,
+        `citations` int(11) NOT NULL DEFAULT '0',
         `year` varchar(255) NOT NULL,
         `citelink` text NOT NULL,
         `citedbylink` text NOT NULL,
         PRIMARY KEY (`pid`)
-    ) ENGINE=MyISAM DEFAULT CHARSET=utf8");
+    ) ENGINE=MyISAM AUTO_INCREMENT=676 DEFAULT CHARSET=utf8");
 }
 
 
